@@ -1,0 +1,168 @@
+import os
+import json
+import getpass
+import string
+import random
+import logging
+import base64
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+
+PASSWORD_FILE = 'passwords.json'
+LOG_FILE = 'password_manager.log'
+SALT_FILE = 'salt.bin'
+
+
+def generate_key(master_password, salt):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        iterations=100000,
+        salt=salt,
+        length=32,
+    )
+    key = Fernet(base64.urlsafe_b64encode(kdf.derive(master_password.encode())))
+    return key
+
+
+def setup_logging():
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] - %(message)s')
+    file_handler = logging.FileHandler(LOG_FILE)
+    file_handler.setFormatter(formatter)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+
+def load_passwords(fernet):
+    if os.path.exists(PASSWORD_FILE):
+        with open(PASSWORD_FILE, 'rb') as file:
+            data = file.read()
+            if data:
+                return json.loads(fernet.decrypt(data).decode())
+    return {}
+
+
+def save_passwords(fernet, passwords):
+    with open(PASSWORD_FILE, 'wb') as file:
+        file.write(fernet.encrypt(json.dumps(passwords).encode()))
+
+
+def add_password(fernet):
+    service = input("Enter the service: ")
+    username = input("Enter the username: ")
+
+    while True:
+        try:
+            password_length = int(input("Enter the desired password length: "))
+            password = generate_password(password_length)
+            break
+        except ValueError:
+            print("Please enter a valid password length (an integer).")
+
+    passwords = load_passwords(fernet)
+    if service in passwords:
+        print("Service already exists. Updating password...")
+        logging.info(f"Password for {service} updated.")
+    else:
+        logging.info(f"Password for {service} added.")
+
+    passwords[service] = {'username': username, 'password': password}
+    save_passwords(fernet, passwords)
+    print(f"Password for {service} saved successfully.")
+
+
+def generate_password(length=12):
+    characters = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(random.choice(characters) for _ in range(length))
+
+
+def get_password(fernet):
+    service = input("Enter the service: ")
+    passwords = load_passwords(fernet)
+    if service in passwords:
+        print(f"Service: {service}")
+        print(f"Username: {passwords[service]['username']}")
+        print(f"Password: {passwords[service]['password']}")
+        logging.info(f"Retrieved password for {service}.")
+    else:
+        print(f"No password found for {service}.")
+        logging.info(f"No password found for {service}.")
+
+
+def create_master_password():
+    while True:
+        master_password = getpass.getpass("Create a master password: ")
+        if not is_strong_password(master_password):
+            print("Your master password is weak. Please choose a stronger one.")
+        else:
+            confirm_password = getpass.getpass("Confirm master password: ")
+            if master_password == confirm_password:
+                return master_password
+            else:
+                print("Passwords do not match. Please try again.")
+
+
+def is_strong_password(password):
+    if len(password) < 8:
+        return False
+
+    uppercase_count = 0
+    digit_count = 0
+
+    for char in password:
+        if char.isupper():
+            uppercase_count += 1
+        if char.isdigit():
+            digit_count += 1
+
+    return uppercase_count >= 1 and digit_count >= 3
+
+
+def store_salt(salt):
+    with open(SALT_FILE, 'wb') as file:
+        file.write(salt)
+
+
+def load_salt():
+    if os.path.exists(SALT_FILE):
+        with open(SALT_FILE, 'rb') as file:
+            return file.read()
+    return None
+
+
+def main():
+    setup_logging()
+    existing_salt = load_salt()
+    if existing_salt:
+        master_password = getpass.getpass("Enter your master password: ")
+    else:
+        master_password = create_master_password()
+        salt = os.urandom(16)
+        store_salt(salt)
+        existing_salt = salt
+
+    fernet = Fernet(generate_key(master_password, existing_salt))
+
+    while True:
+        print("\nPassword Manager Menu:")
+        print("1. Add a password")
+        print("2. Get a password")
+        print("3. Exit")
+        choice = input("Enter your choice: ")
+
+        if choice == '1':
+            add_password(fernet)
+        elif choice == '2':
+            get_password(fernet)
+        elif choice == '3':
+            break
+        else:
+            print("Invalid choice. Please select a valid option.")
+
+
+if __name__ == "__main__":
+    main()
